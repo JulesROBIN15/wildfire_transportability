@@ -59,7 +59,7 @@ read_wildfire_data <- function() {
   CA_hosp_County_week37_49$week<- as.numeric(CA_hosp_County_week37_49$week)
   
   ### Load and prepare demographic data: extract total population by county
-  dp5 <- read.csv("ACSDP5Y2020.DP05-2025-02-19T205730.csv")
+  dp5 <- read.csv("data/ACSDP5Y2020.DP05-2025-02-19T205730.csv")
   dp5 <- dp5[2, colnames(dp5)[grepl("Estimate", colnames(dp5))]]
   colnames(dp5) <- str_extract(colnames(dp5), regex("(^.+)County"))
   colnames(dp5) <- str_replace(colnames(dp5), ".County", "")

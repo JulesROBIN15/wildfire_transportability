@@ -28,7 +28,7 @@ library(ggpubr)
 library(purrr)
 
 # Load functions
-source("functions.R")
+source("R/functions.R")
 
 # Set seed
 set.seed(10149101)
@@ -230,7 +230,7 @@ exposed_county_effects <- exposed_county_effects |>
 
 #### Study all counties simultaneously.
 
-##### Estimate the transported effect for each county using all remaining counties 
+##### Estimate the transported effect for each county using all remaining counties
 
 ```{r}
 # transport_all <- t(sapply(unique(exposed_data$countyname), function(s) {
@@ -245,12 +245,12 @@ exposed_county_effects <- exposed_county_effects |>
 #                           type == "Transported (SuperLearner)" ~ "Transported - all (SuperLearner)"),
 #          across(c(estimate, lower_ci, upper_ci), as.numeric))
 # 
-# save(transport_all, file="transport_all.rds")
+# save(transport_all, file="output/transport_all.rds")
 
-load(file="transport_all.rds")
+load(file="output/transport_all.rds")
 ```
 
-##### Estimate the transported effect for each county using 50% of remaining counties (randomly selected) 
+##### Estimate the transported effect for each county using 50% of remaining counties (randomly selected)
 
 ```{r}
 # transport_half <- t(sapply(unique(exposed_data$countyname), function(s) {
@@ -266,9 +266,9 @@ load(file="transport_all.rds")
 #                           type == "Transported (SuperLearner)" ~ "Transported - 50% (SuperLearner)"),
 #          across(c(estimate, lower_ci, upper_ci), as.numeric))
 # 
-# save(transport_half, file="transport_half.rds")
+# save(transport_half, file="output/transport_half.rds")
 
-load("transport_half.rds")
+load("output/transport_half.rds")
 ```
 
 ##### Figure A2: Observed and transported effect estimates for each exposed county
@@ -425,7 +425,7 @@ top_5_counties <- c("Colusa", "Marin", "Mendocino", "San Mateo", "Merced")
 sj_observed <- filter(exposed_county_effects, county == "San Joaquin")
 ```
 
-##### Estimate the transported effects for each of Colusa, Marin, Mendocino, San Mateo, and Merced to San Joaquin 
+##### Estimate the transported effects for each of Colusa, Marin, Mendocino, San Mateo, and Merced to San Joaquin
 
 ```{r}
 transport_pairwise <- t(sapply(top_5_counties, function(s) transport_iosw(county_1 = s, county_0 = "San Joaquin")))
@@ -436,7 +436,7 @@ transport_pairwise <- as.data.frame(apply(transport_pairwise, 2, unlist)) |>
   bind_rows(sj_observed)
 ```
 
-##### Estimate the transported effect for Colusa, Marin, Mendocino, San Mateo, and Merced to San Joaquin 
+##### Estimate the transported effect for Colusa, Marin, Mendocino, San Mateo, and Merced to San Joaquin
 
 ```{r}
 transport_jointly <- transport_iosw(top_5_counties, "San Joaquin")
@@ -649,7 +649,7 @@ for(county_0 in top_counties){
 }
 ```
 
-#### From counties with an effect or no effect to counties with no effect 
+#### From counties with an effect or no effect to counties with no effect
 
 ```{r}
 for(county_0 in no_effect_counties){
@@ -720,8 +720,8 @@ assess_transport_overlap(counties_1, county_0)
 
 ```{r}
 # res_eval_overlap_error_link = eval_overlap_error_link(200, 3)
-# saveRDS(res_eval_overlap_error_link, file="res_eval_overlap_error_link.rds")
-res_eval_overlap_error_link = readRDS("res_eval_overlap_error_link.rds")
+# saveRDS(res_eval_overlap_error_link, file="output/res_eval_overlap_error_link.rds")
+res_eval_overlap_error_link = readRDS("output/res_eval_overlap_error_link.rds")
 ```
 
 ```{r}
