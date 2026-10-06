@@ -1,0 +1,781 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Applying Transportability Methods to Assess the Respiratory Health Impacts of Wildfire Smoke: Insights from the 2018 California Wildfires
+
+### Load packages, functions and data
+
+```{r}
+# Load packages
+library(tidyverse)
+library(table1)
+library(SuperLearner)
+library(ggpubr)
+library(grid)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(tableone)
+library(survey)
+library(cobalt)
+library(WeightIt)
+library(SuperLearner)
+library(ggpubr)
+library(purrr)
+
+# Load functions
+source("functions.R")
+
+# Set seed
+set.seed(10149101)
+```
+
+```{r}
+# Read data
+data <- read_wildfire_data()
+
+# Create exposed county data set
+exposed_data <- data |>
+    filter(Smokebin == 1) |>
+    mutate(resp_prop = resp/total.pop,
+           date = ymd(paste0(year, "/", month, "/", day)))
+```
+
+### Descriptive analysis
+
+#### Table 2: descriptive statistics
+
+```{r}
+descriptive_data <- exposed_data |>
+    mutate(tmax = structure(tmax, label = "Maximum temperature"),
+           prec = structure(prec, label = "Precipitation"),
+           hum = structure(hum, label = "Relative humidity"),
+           shrtwv_rad = structure(shrtwv_rad, label = "Shortwave radiation"),
+           wind = structure(wind, label = "Wind velocity"),
+           exp_day = factor(exp_day, levels = c(0,1), labels = c("Before smoke exposure", "After smoke exposure")))
+
+table1(~ tmax + prec + hum + shrtwv_rad + wind | exp_day,
+       overall = c(left = "Total"),
+       data = descriptive_data)
+```
+
+#### Figure A1: generate scatter plots by county with simple level change model prediction overlay (without time-varying confounders)
+
+Initial version:
+
+```{r}
+plot_data <- exposed_data |>
+  group_by(countyname) |>
+  mutate(resp_fitted = predict(glm(resp ~ offset(log(total.pop)) + exp_day + time_unit, family = quasipoisson),type = "response")) |>
+  ungroup()
+  
+plot_data |> ggplot(aes(x = date, y = resp)) +
+  geom_point(alpha = 5/10, size = 0.5) +
+  geom_line(aes(x = date, y = resp_fitted), color = "red") +
+  annotate('rect', 
+           xmin=ymd("2018-11-08"), 
+           xmax=ymd("2018-12-05"), 
+           ymin=min(exposed_data$resp), 
+           ymax=max(exposed_data$resp), 
+           alpha=.2) +
+  theme_light() + 
+  facet_wrap(vars(countyname)) + 
+  labs(x = "Date (2018)", 
+       y = "Total Respiratory Hospitalizations")
+```
+
+A version that provides a better understanding of the dynamics:
+
+```{r}
+plot_data |> ggplot(aes(x = date, y = resp)) +
+  geom_rect(data = data.frame(xmin = ymd("2018-11-08"),
+                              xmax = ymd("2018-12-05"),
+                              ymin = -Inf,
+                              ymax = Inf),
+            aes(xmin = xmin,
+                xmax = xmax,
+                ymin = ymin,
+                ymax = ymax, 
+                fill = "Exposure to fire smoke"),
+            inherit.aes = FALSE, 
+            alpha = 0.2) +
+  geom_point(alpha = 5/10, size = 0.5) +
+  geom_line(aes(x = date, y = resp_fitted), color = "red") +
+  scale_fill_manual(name = NULL, values = c("Exposure to fire smoke" = "black")) +
+  theme_light() +
+  theme(legend.position = "bottom") + 
+  facet_wrap(vars(countyname), scales = "free_y") + 
+  labs(x = "Date (2018)", y = "Total Respiratory Hospitalizations")
+```
+
+### Effect of wildfire exposure for each county
+
+#### Estimate effects
+
+```{r}
+exposed_county_effects <- t(sapply(unique(exposed_data$countyname), function(s) {
+    county_ind <- which(exposed_data$countyname == s)
+    s_estimate <- estimate_effect(county_ind, count = TRUE)
+    return(s_estimate)
+}))
+
+exposed_county_effects <- tibble::rownames_to_column(data.frame(exposed_county_effects), "county")
+colnames(exposed_county_effects) <- c("county", "estimate", "lower_ci", "upper_ci")
+```
+
+#### Figure 1: plot the effect estimates
+
+Initial version:
+
+```{r}
+exposed_county_effects |>
+    ggplot(aes(x = reorder(county, estimate),
+               y = estimate)) +
+    geom_pointrange(aes(ymin = lower_ci, ymax = upper_ci)) + 
+    geom_hline(yintercept = 1) + 
+    coord_flip() +
+    labs(x = "County", y = "Effect Estimate (RR)") + 
+    theme_minimal()
+```
+
+Another version of the graph:
+
+```{r}
+exposed_county_effects |>
+  ggplot(aes(x = reorder(county, estimate), y = estimate)) +
+  geom_errorbar( # Confidence intervals
+    aes(ymin = lower_ci, ymax = upper_ci),
+    color = "#F8766D",
+    linewidth = 0.8,
+    width = 0.25
+  ) +
+  geom_point(
+    color = "#F8766D",
+    size = 1.8
+  ) +
+  geom_hline(
+    yintercept = 1,
+    linetype = "dashed",
+    color = "grey40"
+  ) +
+  labs(
+    x = NULL,
+    y = "Effect Estimate (RR)"
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, 3, by = 0.2)
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1,
+      size = 8
+    ),
+    axis.title.y = element_text(size = 10),
+    panel.grid.major.x = element_blank()
+  )
+```
+
+```{r}
+exposed_county_effects |>
+  ggplot(aes(x = reorder(county, estimate), y = estimate)) +
+  geom_errorbar(
+    aes(ymin = lower_ci, ymax = upper_ci),
+    color = "#F8766D",
+    linewidth = 0.8,
+    width = 0.25
+  ) +
+  geom_point(
+    color = "#F8766D",
+    size = 1.8
+  ) +
+  geom_hline(
+    yintercept = 1,
+    linetype = "dashed",
+    color = "grey40"
+  ) +
+  labs(
+    x = NULL,
+    y = "Effect Estimate (RR)"
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, 3, by = 0.2)
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.y = element_text(
+      angle = 0,
+      hjust = 1,
+      vjust = 1,
+      size = 8
+    ),
+    axis.title.x = element_text(size = 10),
+    panel.grid.major.y = element_blank()
+  )+
+  coord_flip()
+```
+
+### Transport county-level effect estimates
+
+```{r}
+exposed_county_effects <- exposed_county_effects |>
+    mutate(type = "Observed")
+```
+
+#### Study all counties simultaneously.
+
+##### Estimate the transported effect for each county using all remaining counties 
+
+```{r}
+# transport_all <- t(sapply(unique(exposed_data$countyname), function(s) {
+#   county_1 <- unique(exposed_data$countyname)[!(unique(exposed_data$countyname) == s)]
+#   effect <- transport_iosw(county_1 = county_1, county_0 = s)
+#   return(effect)
+# }))
+# 
+# transport_all <- as.data.frame(apply(transport_all, 2, unlist)) |>
+#   mutate(county = rep(rownames(transport_all), each = 2),
+#          type = case_when(type == "Transported (logistic regression)" ~ "Transported - all (logistic regression)",
+#                           type == "Transported (SuperLearner)" ~ "Transported - all (SuperLearner)"),
+#          across(c(estimate, lower_ci, upper_ci), as.numeric))
+# 
+# save(transport_all, file="transport_all.rds")
+
+load(file="transport_all.rds")
+```
+
+##### Estimate the transported effect for each county using 50% of remaining counties (randomly selected) 
+
+```{r}
+# transport_half <- t(sapply(unique(exposed_data$countyname), function(s) {
+#   other_counties <- unique(exposed_data$countyname)[!(unique(exposed_data$countyname) == s)]
+#   county_1 <- sample(other_counties, 0.5*length(other_counties), replace = F)
+#   effect <- transport_iosw(county_1 = county_1, county_0 = s)
+#   return(effect)
+# }))
+# 
+# transport_half <- as.data.frame(apply(transport_half, 2, unlist)) |>
+#   mutate(county = rep(rownames(transport_half), each = 2),
+#          type = case_when(type == "Transported (logistic regression)" ~ "Transported - 50% (logistic regression)",
+#                           type == "Transported (SuperLearner)" ~ "Transported - 50% (SuperLearner)"),
+#          across(c(estimate, lower_ci, upper_ci), as.numeric))
+# 
+# save(transport_half, file="transport_half.rds")
+
+load("transport_half.rds")
+```
+
+##### Figure A2: Observed and transported effect estimates for each exposed county
+
+Initial version:
+
+```{r}
+# Order the counties according to the estimated effect.
+county_order <- exposed_county_effects |>
+  arrange(estimate) |>
+  pull(county) |>
+  unique()
+
+bind_rows(transport_all, transport_half, exposed_county_effects) |>
+  filter(type %in% c("Observed", 
+                     "Transported - all (logistic regression)", 
+                     "Transported - 50% (logistic regression)")) |>
+  mutate(county = factor(county, levels = county_order)) |>
+  ggplot(aes(x = county,
+             y = estimate,
+             color = type,
+             linetype = type)) +
+  geom_pointrange(aes(ymin = lower_ci, ymax = upper_ci),
+                  position = position_dodge(0.7)) + 
+  geom_hline(yintercept = 1, linetype = "dashed", color = "grey40") + 
+  labs(x = "County", 
+       y = "Effect Estimate (RR)", 
+       linetype = "Estimate", 
+       color = "Estimate") + 
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 12),
+    axis.title.y = element_text(size = 14)
+  )
+```
+
+Another version of the graph:
+
+```{r}
+# Shared position_dodge object to align interval brackets and points
+pd <- position_dodge(width = 0.7)
+
+bind_rows(transport_all, transport_half, exposed_county_effects) |>
+  filter(type %in% c("Observed", 
+                     "Transported - all (logistic regression)", 
+                     "Transported - 50% (logistic regression)")) |>
+  mutate(county = factor(county, levels = county_order)) |>
+  ggplot(aes(x = county, 
+             y = estimate, 
+             color = type, 
+             linetype = type)) +
+  geom_errorbar(
+    aes(ymin = lower_ci, ymax = upper_ci),
+    linewidth = 0.8,
+    width = 0.3,
+    position = pd
+  ) +
+  geom_point(
+    size = 1.8,
+    position = pd
+  ) +
+  geom_hline(
+    yintercept = 1,
+    linetype = "dashed",
+    color = "grey40"
+  ) +
+  scale_color_manual(
+    values = c(
+      "Observed" = "#F8766D",                                 
+      "Transported - all (logistic regression)" = "#5B2C6F", 
+      "Transported - 50% (logistic regression)" = "#A569BD"
+    )
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, 3, by = 0.2)
+  ) +
+  labs(
+    x = NULL,
+    y = "Effect Estimate (RR)",
+    color = "Estimate",
+    linetype = "Estimate"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1,
+      size = 8
+    ),
+    axis.title.y = element_text(size = 10),
+    panel.grid.major.x = element_blank()
+  )
+```
+
+Another version of the graph:
+
+```{r}
+bind_rows(transport_all, transport_half, exposed_county_effects) |>
+  filter(type %in% c("Observed", 
+                     "Transported - all (logistic regression)", 
+                     "Transported - 50% (logistic regression)")) |>
+  mutate(county = factor(county, levels = county_order)) |>
+  ggplot(aes(x = county, y = estimate, color = type, linetype = type)) +
+  geom_errorbar(
+    aes(ymin = lower_ci, ymax = upper_ci),
+    linewidth = 0.8,
+    width = 0.3,
+    position = pd
+  ) +
+  geom_point(
+    size = 1.8,
+    position = pd
+  ) +
+  geom_hline(
+    yintercept = 1,
+    linetype = "dashed",
+    color = "grey40"
+  ) +
+  scale_color_manual(
+    values = c(
+      "Observed" = "#F8766D",                                 
+      "Transported - all (logistic regression)" = "#5B2C6F",   
+      "Transported - 50% (logistic regression)" = "#A569BD"  
+    )
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, 3, by = 0.2)
+  ) +
+  labs(
+    x = NULL,
+    y = "Effect Estimate (RR)",
+    color = "Estimate",
+    linetype = "Estimate"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.y = element_text(
+      angle = 0,
+      hjust = 1,
+      vjust = 1,
+      size = 8
+    ),
+    axis.title.x = element_text(size = 10),
+    panel.grid.major.y = element_blank()
+  )+
+  coord_flip()
+```
+
+#### From the 5 counties with the greatest impact to San Joaquin
+
+```{r}
+top_5_counties <- c("Colusa", "Marin", "Mendocino", "San Mateo", "Merced")
+sj_observed <- filter(exposed_county_effects, county == "San Joaquin")
+```
+
+##### Estimate the transported effects for each of Colusa, Marin, Mendocino, San Mateo, and Merced to San Joaquin 
+
+```{r}
+transport_pairwise <- t(sapply(top_5_counties, function(s) transport_iosw(county_1 = s, county_0 = "San Joaquin")))
+
+transport_pairwise <- as.data.frame(apply(transport_pairwise, 2, unlist)) |>
+  mutate(county = paste0(rep(rownames(transport_pairwise), each = 2), " to ", "San Joaquin"),
+         across(c(estimate, lower_ci, upper_ci), as.numeric)) |>
+  bind_rows(sj_observed)
+```
+
+##### Estimate the transported effect for Colusa, Marin, Mendocino, San Mateo, and Merced to San Joaquin 
+
+```{r}
+transport_jointly <- transport_iosw(top_5_counties, "San Joaquin")
+
+transport_jointly <- sj_observed |>
+    dplyr::select(-county) |>
+    bind_rows(transport_jointly)
+```
+
+#### Figure 2: From the 5 counties with the greatest impact to San Joaquin
+
+Initial version:
+
+```{r}
+fig_2A <- transport_pairwise %>%
+  ggplot(aes(x = factor(county, level = unique(county)),
+             y = estimate,
+             color = type,
+             linetype = type)) + 
+  geom_pointrange(aes(ymin = lower_ci, ymax = upper_ci),
+                  position = position_dodge(0.25)) +
+  geom_hline(yintercept = 1) +
+  labs(x = "", y = "Effect Estimate (RR)", linetype = "") + 
+  theme_minimal() +
+  labs(color = "Estimate", linetype = "Estimate")
+
+fig_2B <- transport_jointly %>%
+  ggplot(aes(x = type,
+             y = estimate,
+             color = type, linetype = type)) + 
+  geom_pointrange(aes(ymin = lower_ci, ymax = upper_ci),
+                  position = position_dodge(0.25)) +
+  geom_hline(yintercept = 1) +
+  labs(x = "San Joaquin", y = "Effect Estimate (RR)") + 
+  theme_minimal() +
+  theme(axis.text.x = element_blank()) +
+  labs(color = "Estimate", linetype = "Estimate")
+
+ggarrange(fig_2A, fig_2B, 
+                   nrow = 2, 
+                   labels = c("A", "B"),
+                   common.legend = TRUE, 
+                   legend = "right")
+```
+
+Another version of the graph:
+
+```{r}
+pd <- position_dodge(width = 0.5)
+
+custom_colors <- c(
+  "Observed" = "#F8766D",                                 
+  "Transported (logistic regression)" = "#7570B3",
+  "Transported (SuperLearner)" = "#E69F00"
+)
+
+fig_2A <- transport_pairwise |>
+  ggplot(aes(x = factor(county, levels = unique(county)),
+             y = estimate,
+             color = type,
+             linetype = type)) + 
+  geom_errorbar(
+    aes(ymin = lower_ci, ymax = upper_ci),
+    linewidth = 0.8,
+    width = 0.25,
+    position = pd
+  ) +
+  geom_point(
+    size = 1.8,
+    position = pd
+  ) +
+  geom_hline(
+    yintercept = 1,
+    linetype = "dashed",
+    color = "grey40"
+  ) +
+  scale_color_manual(values = custom_colors) +
+  scale_y_continuous(breaks = seq(0, 3, by = 0.2)) +
+  labs(
+    x = NULL,
+    y = "Effect Estimate (RR)",
+    color = "Estimate",
+    linetype = "Estimate"
+  ) + 
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 8),
+    axis.title.y = element_text(size = 10),
+    panel.grid.major.x = element_blank()
+  )
+
+fig_2B <- transport_jointly |>
+  ggplot(aes(x = type,
+             y = estimate,
+             color = type,
+             linetype = type)) + 
+  geom_errorbar(
+    aes(ymin = lower_ci, ymax = upper_ci),
+    linewidth = 0.8,
+    width = 0.25,
+    position = pd
+  ) +
+  geom_point(
+    size = 1.8,
+    position = pd
+  ) +
+  geom_hline(
+    yintercept = 1,
+    linetype = "dashed",
+    color = "grey40"
+  ) +
+  scale_color_manual(values = custom_colors) +
+  scale_y_continuous(breaks = seq(0, 3, by = 0.2)) +
+  labs(
+    x = "All of them to San Joaquin",
+    y = "Effect Estimate (RR)",
+    color = "Estimate",
+    linetype = "Estimate"
+  ) + 
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title.y = element_text(size = 10),
+    panel.grid.major.x = element_blank()
+  )
+ 
+ggarrange(
+  fig_2A, fig_2B, 
+  nrow = 2, 
+  labels = c("A", "B"),
+  common.legend = TRUE, 
+  legend = "right"
+)
+```
+
+Another version of the graph:
+
+```{r}
+# Merging of datasets
+combined_transport <- bind_rows(
+  transport_pairwise,
+  transport_jointly[2:3,] |> mutate(county = "All of them to San Joaquin")
+) |> 
+  mutate(
+    county = factor(county, levels = c(unique(transport_pairwise$county), 
+                                       "All of them to San Joaquin"))
+  )
+
+pd <- position_dodge(width = 0.5)
+custom_colors <- c("#F8766D", "#7570B3", "#E69F00")
+
+combined_transport |>
+  ggplot(aes(x = county, y = estimate, color = type, linetype = type)) +
+  geom_vline(
+    xintercept = length(unique(transport_pairwise$county)) + 0.5,
+    linetype = "dotted",
+    color = "grey60",
+    linewidth = 0.6
+  ) +
+  geom_errorbar(
+    aes(ymin = lower_ci, ymax = upper_ci),
+    linewidth = 0.8,
+    width = 0.25,
+    position = pd
+  ) +
+  geom_point(
+    size = 1.8,
+    position = pd
+  ) +
+  geom_hline(
+    yintercept = 1,
+    linetype = "dashed",
+    color = "grey40"
+  ) +
+  scale_color_manual(values = custom_colors) +
+  scale_y_continuous(breaks = seq(0, 3, by = 0.2)) +
+  labs(
+    x = NULL,
+    y = "Effect Estimate (RR)",
+    color = "Estimate",
+    linetype = "Estimate"
+  ) + 
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 9),
+    axis.title.y = element_text(size = 10),
+    panel.grid.major.x = element_blank()
+  )
+```
+
+### Can an effect be observed starting from conditions with no effect, and vice versa?
+
+```{r}
+top_counties <- c(top_5_counties, "San Joaquin")
+no_effect_counties <- c("Fresno", "Kings", "Alameda", "Contra Costa", "Stanislaus", "Sacramento")
+```
+
+#### From counties with an effect or no effect to counties with effect:
+
+```{r}
+for(county_0 in top_counties){
+  
+  counties_1 <- top_counties[-which(top_counties==county_0)]
+  
+  transport_analysis(county_0, counties_1, paste0("From counties with an effect to ", county_0))
+  
+  counties_1 <- no_effect_counties
+  
+  transport_analysis(county_0, counties_1,  paste0("From counties with no effect to ", county_0))
+}
+```
+
+#### From counties with an effect or no effect to counties with no effect 
+
+```{r}
+for(county_0 in no_effect_counties){
+  
+  counties_1 <- no_effect_counties[-which(no_effect_counties==county_0)]
+  
+  transport_analysis(county_0, counties_1, paste0("From counties with no effect to ", county_0))
+  
+  counties_1 <- top_counties
+  
+  transport_analysis(county_0, counties_1,  paste0("From counties with an effect to ", county_0))
+}
+```
+
+### Study the overlap
+
+#### Cases where the estimation appears to work
+
+```{r}
+county_0 <- "San Joaquin"
+counties_1 <- top_counties[-which(top_counties==county_0)]
+
+transport_analysis(county_0, counties_1)
+assess_transport_overlap(counties_1, county_0)
+```
+
+```{r}
+county_0 <- "Merced"
+counties_1 <- top_counties[-which(top_counties==county_0)]
+
+transport_analysis(county_0, counties_1)
+assess_transport_overlap(counties_1, county_0)
+```
+
+```{r}
+county_0 <- "Colusa"
+counties_1 <- top_counties[-which(top_counties==county_0)]
+
+transport_analysis(county_0, counties_1)
+assess_transport_overlap(counties_1, county_0)
+```
+
+This result is explained by a very different distribution of the "wind" variable between the two populations.
+
+#### Cases where the estimation does not seem to work
+
+Figure A3 and A5:
+
+```{r}
+county_0 <- "Colusa"
+counties_1 <- no_effect_counties
+
+transport_analysis(county_0, counties_1)
+assess_transport_overlap(counties_1, county_0)
+```
+
+Figure A5 and A6:
+
+```{r}
+county_0 <- "Alameda"
+counties_1 <- top_counties
+
+transport_analysis(county_0, counties_1)
+assess_transport_overlap(counties_1, county_0)
+```
+
+### Comparison between overlap and estimation error
+
+```{r}
+# res_eval_overlap_error_link = eval_overlap_error_link(200, 3)
+# saveRDS(res_eval_overlap_error_link, file="res_eval_overlap_error_link.rds")
+res_eval_overlap_error_link = readRDS("res_eval_overlap_error_link.rds")
+```
+
+```{r}
+res_eval_overlap_error_link |> 
+  ggplot(aes(x = beta, y = abs_error)) +
+  geom_vline(xintercept = c(0.5, 0.8), linetype = "dashed", color = "gray40", linewidth = 0.6) +
+  geom_point(aes(color = factor(n_sources)), alpha = 0.7, size = 2.5) +
+  geom_smooth(method = "loess", color = "black", linewidth = 1, se = TRUE) +
+  scale_y_log10() +
+  scale_x_continuous(breaks = seq(0, 1, by = 0.1)) +
+  labs(
+    title = "Impact of Overlap on Transportability Error",
+    subtitle = "Beta < 0.5: Poor overlap / Beta > 0.8: Good overlap",
+    x = "Tipton's Beta",
+    y = "Absolute Estimation Error (log scale)",
+    color = "Number of source counties"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+res_eval_overlap_error_link <- res_eval_overlap_error_link |>
+  mutate(
+    beta_cat = cut(
+      beta,
+      breaks = c(0, 0.5, 0.8, 1.0),
+      labels = c("Low (< 0.5)", "Moderate [0.5 - 0.8)", "High (>= 0.8)"),
+      include.lowest = TRUE
+    )
+  )
+
+ggplot(res_eval_overlap_error_link, aes(x = beta_cat, y = abs_error, fill = beta_cat)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = 16, outlier.alpha = 0.5) +
+  scale_y_log10() +
+  scale_fill_manual(values = c("Low (< 0.5)" = "#d73027", 
+                               "Moderate [0.5 - 0.8)" = "#fecc5c", 
+                               "High (>= 0.8)" = "#1a9850")) +
+  labs(
+    title = "Impact of Overlap on Transportability Error",
+    x = "Tipton's Beta Index",
+    y = "Absolute Estimation Error (log scale)",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+### Comparison between extrapolation and transportability errors
+
+```{r}
+plot_extrapolation_vs_transport("San Joaquin")
+```
+
+```{r}
+plot_extrapolation_vs_transport("Lake")
+```
